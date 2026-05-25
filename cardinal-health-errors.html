@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Cardinal Health — Error Tracker</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:#0f172a;font-family:'DM Sans',sans-serif;color:#e2e8f0;}
+select,input,textarea{color:#e2e8f0;font-family:'DM Sans',sans-serif;}
+select option{background:#1e293b;color:#e2e8f0;}
+::-webkit-scrollbar{width:6px;}
+::-webkit-scrollbar-track{background:#0f172a;}
+::-webkit-scrollbar-thumb{background:#334155;border-radius:3px;}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect,useCallback} = React;
+
+const ERROR_TYPES=[
+  {id:"shipping", label:"Shipping / Mislabel",       color:"#ef4444"},
+  {id:"inventory",label:"Inventory Discrepancy",      color:"#f97316"},
+  {id:"equipment",label:"Equipment / Conveyor Fault", color:"#eab308"},
+  {id:"pick_pack",label:"Pick & Pack Error",          color:"#8b5cf6"},
+  {id:"quality",  label:"Quality Control Failure",    color:"#06b6d4"},
+];
+const SEVERITY=["Low","Medium","High","Critical"];
+const ZONES=["Zone A","Zone B","Zone C","Zone D","Zone E","Receiving","Shipping Dock","QC Station"];
+const SHIFTS=["Morning (6AM-2PM)","Afternoon (2PM-10PM)","Night (10PM-6AM)"];
+const STORE="cardinal-errors-v1";
+
+const genId=()=>"e"+Date.now()+Math.random().toString(36).slice(2,6);
+const fmt=ts=>new Date(ts).toLocaleString("en-US",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"});
+const sevColor=s=>({Low:"#22c55e",Medium:"#f59e0b",High:"#ef4444",Critical:"#dc2626"}[s]||"#888");
+const stStyle=st=>({
+  Open:{bg:"#fef2f2",color:"#dc2626",border:"#fca5a5"},
+  "In Progress":{bg:"#fffbeb",color:"#d97706",border:"#fcd34d"},
+  Resolved:{bg:"#f0fdf4",color:"#16a34a",border:"#86efac"},
+}[st]||{bg:"#f1f5f9",color:"#64748b",border:"#cbd5e1"});
+
+const card={background:"#1e293b",border:"1px solid #334155",borderRadius:14,padding:22};
+const lbl={color:"#94a3b8",fontSize:11,fontFamily:"'DM Mono',monospace",letterSpacing:1.2,marginBottom:5,display:"block",textTransform:"uppercase"};
+const inp={width:"100%",background:"#0f172a",border:"1px solid #334155",borderRadius:8,padding:"10px 13px",color:"#e2e8f0",fontSize:14,outline:"none",boxSizing:"border-box",fontFamily:"'DM Sans',sans-serif"};
+const mkBtn=(bg="#3b82f6",ex={})=>({background:bg,color:"#fff",border:"none",borderRadius:8,padding:"10px 22px",fontWeight:600,fontSize:14,cursor:"pointer",fontFamily:"'DM Sans',sans-serif",...ex});
+
+function load(){try{const d=localStorage.getItem(STORE);return d?JSON.parse(d):[];}catch{return[];}}
+function save(errors){try{localStorage.setItem(STORE,JSON.stringify(errors));}catch{}}
+
+const SH=({title,sub})=>(
+  <div style={{marginBottom:18}}>
+    <div style={{color:"#f1f5f9",fontWeight:700,fontSize:17}}>{title}</div>
+    {sub&&<div style={{color:"#64748b",fontSize:12,marginTop:3}}>{sub}</div>}
+  </div>
+);
+
+function AILogger({onError}){
+  const [text,setText]=useState("");
+  const [emp,setEmp]=useState("");
+  const [loading,setLoading]=useState(false);
+  const [result,setResult]=useState(null);
+
+  async function analyze(){
+    if(!text.trim())return;
+    setLoading(true);setResult(null);
+    try{
+      const res=await fetch("https://api.anthropic.com/v1/messages",{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          model:"claude-sonnet-4-20250514",max_tokens:1000,
+          messages:[{role:"user",content:`You are an error classification AI for a Cardinal Health pharmaceutical warehouse. Analyze the error and return ONLY a JSON object (no markdown): {"type":"shipping|inventory|equipment|pick_pack|quality","severity":"Low|Medium|High|Critical","zone":"Zone A|Zone B|Zone C|Zone D|Zone E|Receiving|Shipping Dock|QC Station","shift":"Morning (6AM-2PM)|Afternoon (2PM-10PM)|Night (10PM-6AM)","description":"professional version max 120 chars","suggestedAction":"next step max 100 chars"} Error: "${text}"`}]
+        })
+      });
+      const data=await res.json();
+      const raw=data.content?.map(b=>b.text||"").join("")||"";
+      setResult(JSON.parse(raw.replace(/```json|```/g,"").trim()));
+    }catch{setResult({error:true});}
+    setLoading(false);
+  }
+
+  function log(){
+    if(!result||result.error)return;
+    onError({id:genId(),...result,barcode:"CH-"+Date.now().toString().slice(-8),timestamp:Date.now(),status:"Open",employee:emp||"Unassigned",resolvedBy:"",aiSuggestion:result.suggestedAction});
+    setText("");setEmp("");setResult(null);
+  }
+
+  return(
+    <div style={{...card,background:"linear-gradient(135deg,#0f172a,#1a2744)",border:"1px solid #2d4a7a",marginBottom:20}}>
+      <SH title="AI-Powered Error Logger" sub="Describe what happened — AI classifies, prioritizes, and recommends action"/>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:12}}>
+        <div style={{gridColumn:"1/-1"}}>
+          <label style={lbl}>Error Description</label>
+          <textarea value={text} onChange={e=>setText(e.target.value)} placeholder="e.g. Conveyor in zone C jammed during night shift..." style={{...inp,minHeight:80,resize:"vertical"}}/>
+        </div>
+        <div>
+          <label style={lbl}>Logged By (Employee Name)</label>
+          <input value={emp} onChange={e=>setEmp(e.target.value)} placeholder="e.g. Sarah Chen" style={inp}/>
+        </div>
+        <div style={{display:"flex",alignItems:"flex-end"}}>
+          <button onClick={analyze} disabled={loading||!text.trim()} style={{...mkBtn("linear-gradient(90deg,#2563eb,#0891b2)"),opacity:loading||!text.trim()?0.5:1,width:"100%"}}>
+            {loading?"Analyzing...":"Analyze with AI"}
+          </button>
+        </div>
+      </div>
+      {result&&!result.error&&(
+        <div style={{background:"#0f172a",border:"1px solid #1e4d6b",borderRadius:12,padding:18,marginTop:4}}>
+          <div style={{color:"#38bdf8",fontSize:12,fontWeight:600,letterSpacing:1,marginBottom:12,textTransform:"uppercase"}}>AI Classification Complete</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(2,1fr)",gap:10,marginBottom:10}}>
+            {[["Error Type",ERROR_TYPES.find(t=>t.id===result.type)?.label||result.type],["Severity",result.severity],["Zone",result.zone],["Shift",result.shift]].map(([k,v])=>(
+              <div key={k} style={{background:"#1e293b",borderRadius:8,padding:"9px 13px"}}>
+                <div style={{color:"#64748b",fontSize:10,fontFamily:"'DM Mono',monospace",letterSpacing:1,textTransform:"uppercase"}}>{k}</div>
+                <div style={{color:"#e2e8f0",fontSize:14,fontWeight:600,marginTop:3}}>{v}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{background:"#1e293b",borderRadius:8,padding:"9px 13px",marginBottom:10}}>
+            <div style={{color:"#64748b",fontSize:10,fontFamily:"'DM Mono',monospace",letterSpacing:1,textTransform:"uppercase"}}>Description</div>
+            <div style={{color:"#e2e8f0",fontSize:14,marginTop:3}}>{result.description}</div>
+          </div>
+          <div style={{background:"#1a1600",borderLeft:"3px solid #f59e0b",borderRadius:8,padding:"9px 13px",marginBottom:14}}>
+            <div style={{color:"#f59e0b",fontSize:10,fontFamily:"'DM Mono',monospace",letterSpacing:1,textTransform:"uppercase"}}>Suggested Action</div>
+            <div style={{color:"#fcd34d",fontSize:14,marginTop:3}}>{result.suggestedAction}</div>
+          </div>
+          <button onClick={log} style={{...mkBtn("#16a34a"),width:"100%"}}>Confirm & Log Error</button>
+        </div>
+      )}
+      {result?.error&&<div style={{marginTop:12,color:"#f87171",fontSize:13}}>AI analysis failed — use the manual form below.</div>}
+    </div>
+  );
+}
+
+function ManualForm({onError}){
+  const empty={type:"",severity:"",zone:"",shift:"",description:"",barcode:"",employee:""};
+  const [form,setForm]=useState(empty);
+  const [ok,setOk]=useState(false);
+  const set=(k,v)=>setForm(f=>({...f,[k]:v}));
+  function submit(){
+    if(!form.type||!form.severity||!form.zone||!form.description||!form.employee)return;
+    onError({id:genId(),...form,timestamp:Date.now(),status:"Open",resolvedBy:""});
+    setForm(empty);setOk(true);setTimeout(()=>setOk(false),2500);
+  }
+  return(
+    <div style={card}>
+      <SH title="Manual Error Entry" sub="Fill in the form to log an error directly"/>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+        <div><label style={lbl}>Employee Name *</label><input value={form.employee} onChange={e=>set("employee",e.target.value)} placeholder="Full name" style={inp}/></div>
+        <div><label style={lbl}>Barcode / Scan ID</label><input value={form.barcode} onChange={e=>set("barcode",e.target.value)} placeholder="e.g. CH-2024-00130" style={inp}/></div>
+        <div><label style={lbl}>Error Type *</label>
+          <select value={form.type} onChange={e=>set("type",e.target.value)} style={inp}>
+            <option value="">Select type...</option>
+            {ERROR_TYPES.map(t=><option key={t.id} value={t.id}>{t.label}</option>)}
+          </select>
+        </div>
+        <div><label style={lbl}>Severity *</label>
+          <select value={form.severity} onChange={e=>set("severity",e.target.value)} style={inp}>
+            <option value="">Select severity...</option>
+            {SEVERITY.map(s=><option key={s} value={s}>{s}</option>)}
+          </select>
+        </div>
+        <div><label style={lbl}>Zone *</label>
+          <select value={form.zone} onChange={e=>set("zone",e.target.value)} style={inp}>
+            <option value="">Select zone...</option>
+            {ZONES.map(z=><option key={z} value={z}>{z}</option>)}
+          </select>
+        </div>
+        <div><label style={lbl}>Shift</label>
+          <select value={form.shift} onChange={e=>set("shift",e.target.value)} style={inp}>
+            <option value="">Select shift...</option>
+            {SHIFTS.map(s=><option key={s} value={s}>{s}</option>)}
+          </select>
+        </div>
+        <div style={{gridColumn:"1/-1"}}><label style={lbl}>Description *</label><textarea value={form.description} onChange={e=>set("description",e.target.value)} placeholder="Describe the error in detail..." style={{...inp,minHeight:72,resize:"vertical"}}/></div>
+      </div>
+      <button onClick={submit} style={{...mkBtn(ok?"#16a34a":"#2563eb"),marginTop:16,minWidth:160,transition:"background 0.3s"}}>{ok?"Error Logged!":"Log Error"}</button>
+    </div>
+  );
+}
+
+function StatsBar({errors}){
+  const stats=[
+    {label:"Total Logged",value:errors.length,accent:"#3b82f6"},
+    {label:"Open",value:errors.filter(e=>e.status==="Open").length,accent:"#ef4444"},
+    {label:"In Progress",value:errors.filter(e=>e.status==="In Progress").length,accent:"#f59e0b"},
+    {label:"Critical",value:errors.filter(e=>e.severity==="Critical").length,accent:"#dc2626"},
+    {label:"Resolved",value:errors.filter(e=>e.status==="Resolved").length,accent:"#22c55e"},
+  ];
+  return(
+    <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:12,marginBottom:22}}>
+      {stats.map(s=>(
+        <div key={s.label} style={{...card,padding:"16px 18px",borderLeft:`4px solid ${s.accent}`,borderRadius:12}}>
+          <div style={{color:"#64748b",fontSize:10,fontFamily:"'DM Mono',monospace",letterSpacing:1.2,textTransform:"uppercase"}}>{s.label}</div>
+          <div style={{color:s.accent,fontSize:34,fontWeight:800,lineHeight:1.1,marginTop:4}}>{s.value}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function BarChart({data,colorFn,title}){
+  const max=Math.max(...Object.values(data),1);
+  return(
+    <div style={card}>
+      <div style={{color:"#94a3b8",fontFamily:"'DM Mono',monospace",fontSize:11,letterSpacing:1.2,textTransform:"uppercase",marginBottom:14}}>{title}</div>
+      {Object.entries(data).map(([k,v])=>(
+        <div key={k} style={{marginBottom:10}}>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+            <span style={{color:"#cbd5e1",fontSize:12}}>{k}</span>
+            <span style={{color:colorFn?.(k)||"#94a3b8",fontSize:12,fontWeight:700}}>{v}</span>
+          </div>
+          <div style={{background:"#0f172a",borderRadius:4,height:6}}>
+            <div style={{background:colorFn?.(k)||"#3b82f6",width:`${(v/max)*100}%`,height:"100%",borderRadius:4}}/>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Analytics({errors}){
+  const byType=Object.fromEntries(ERROR_TYPES.map(t=>[t.label,0]));
+  errors.forEach(e=>{const t=ERROR_TYPES.find(x=>x.id===e.type);if(t)byType[t.label]++;});
+  const bySev=Object.fromEntries(SEVERITY.map(s=>[s,0]));
+  errors.forEach(e=>{if(e.severity)bySev[e.severity]++;});
+  const byZone={};errors.forEach(e=>{if(e.zone)byZone[e.zone]=(byZone[e.zone]||0)+1;});
+  const byShift=Object.fromEntries(SHIFTS.map(s=>[s,0]));
+  errors.forEach(e=>{if(e.shift)byShift[e.shift]++;});
+  const byEmp={};errors.forEach(e=>{if(e.employee)byEmp[e.employee]=(byEmp[e.employee]||0)+1;});
+  const topEmps=Object.entries(byEmp).sort((a,b)=>b[1]-a[1]).slice(0,6);
+  const resRate=errors.length?Math.round(errors.filter(e=>e.status==="Resolved").length/errors.length*100):0;
+  const topZone=Object.entries(byZone).sort((a,b)=>b[1]-a[1])[0]?.[0]||"N/A";
+  const topType=Object.entries(byType).sort((a,b)=>b[1]-a[1])[0]?.[0]||"N/A";
+  return(
+    <div>
+      <SH title="Trend Analytics & Root Cause"/>
+      <div style={{...card,marginBottom:16,display:"flex",alignItems:"center",gap:24}}>
+        <div style={{textAlign:"center",minWidth:90}}>
+          <div style={{color:resRate>70?"#22c55e":resRate>40?"#f59e0b":"#ef4444",fontSize:48,fontWeight:900}}>{resRate}%</div>
+          <div style={{color:"#64748b",fontSize:11,fontFamily:"'DM Mono',monospace",letterSpacing:1,textTransform:"uppercase"}}>Resolution Rate</div>
+        </div>
+        <div style={{flex:1}}>
+          <div style={{color:"#94a3b8",fontSize:13,lineHeight:1.7}}>{resRate>70?"Strong resolution performance — team is handling errors efficiently.":resRate>40?"Moderate resolution rate — consider allocating more resources.":"Low resolution rate — immediate management attention recommended."}</div>
+          <div style={{marginTop:8,color:"#475569",fontSize:12}}>Most affected zone: <strong style={{color:"#e2e8f0"}}>{topZone}</strong> | Top error type: <strong style={{color:"#e2e8f0"}}>{topType}</strong></div>
+        </div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:14}}>
+        <BarChart data={byType} title="Errors by Type" colorFn={k=>ERROR_TYPES.find(t=>t.label===k)?.color}/>
+        <BarChart data={bySev} title="Errors by Severity" colorFn={k=>sevColor(k)}/>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:14}}>
+        <BarChart data={byZone} title="Errors by Zone"/>
+        <BarChart data={byShift} title="Errors by Shift"/>
+      </div>
+      {topEmps.length>0&&(
+        <div style={card}>
+          <div style={{color:"#94a3b8",fontFamily:"'DM Mono',monospace",fontSize:11,letterSpacing:1.2,textTransform:"uppercase",marginBottom:14}}>Errors Logged by Employee</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10}}>
+            {topEmps.map(([name,count])=>(
+              <div key={name} style={{background:"#0f172a",borderRadius:10,padding:"12px 16px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div>
+                  <div style={{color:"#e2e8f0",fontSize:13,fontWeight:600}}>{name}</div>
+                  <div style={{color:"#64748b",fontSize:11,marginTop:2}}>errors logged</div>
+                </div>
+                <div style={{color:"#3b82f6",fontSize:26,fontWeight:800}}>{count}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ErrorList({errors,onUpdate,onDelete,onClearResolved}){
+  const [filter,setFilter]=useState({type:"",severity:"",status:"",search:"",employee:""});
+  const [sort,setSort]=useState("newest");
+  const [confirmClear,setConfirmClear]=useState(false);
+  const filtered=errors
+    .filter(e=>(!filter.type||e.type===filter.type)&&(!filter.severity||e.severity===filter.severity)&&(!filter.status||e.status===filter.status)&&(!filter.employee||e.employee?.toLowerCase().includes(filter.employee.toLowerCase()))&&(!filter.search||e.description?.toLowerCase().includes(filter.search.toLowerCase())||e.barcode?.includes(filter.search)))
+    .sort((a,b)=>sort==="newest"?b.timestamp-a.timestamp:sort==="oldest"?a.timestamp-b.timestamp:SEVERITY.indexOf(b.severity)-SEVERITY.indexOf(a.severity));
+  const resolvedCount=errors.filter(e=>e.status==="Resolved").length;
+  const ss={...inp,fontSize:12,padding:"7px 10px"};
+  return(
+    <div>
+      <div style={{display:"flex",flexWrap:"wrap",gap:10,marginBottom:14,alignItems:"center"}}>
+        <input value={filter.search} onChange={e=>setFilter(f=>({...f,search:e.target.value}))} placeholder="Search errors..." style={{...ss,flex:2,minWidth:140}}/>
+        <input value={filter.employee} onChange={e=>setFilter(f=>({...f,employee:e.target.value}))} placeholder="Filter by employee" style={{...ss,flex:1,minWidth:130}}/>
+        <select value={filter.type} onChange={e=>setFilter(f=>({...f,type:e.target.value}))} style={ss}><option value="">All Types</option>{ERROR_TYPES.map(t=><option key={t.id} value={t.id}>{t.label}</option>)}</select>
+        <select value={filter.severity} onChange={e=>setFilter(f=>({...f,severity:e.target.value}))} style={ss}><option value="">All Severity</option>{SEVERITY.map(s=><option key={s} value={s}>{s}</option>)}</select>
+        <select value={filter.status} onChange={e=>setFilter(f=>({...f,status:e.target.value}))} style={ss}><option value="">All Status</option>{["Open","In Progress","Resolved"].map(s=><option key={s} value={s}>{s}</option>)}</select>
+        <select value={sort} onChange={e=>setSort(e.target.value)} style={ss}><option value="newest">Newest</option><option value="oldest">Oldest</option><option value="severity">Severity</option></select>
+      </div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+        <div style={{color:"#64748b",fontSize:12,fontFamily:"'DM Mono',monospace"}}>Showing {filtered.length} of {errors.length} errors</div>
+        <div style={{display:"flex",gap:10}}>
+          {!confirmClear?(
+            <button onClick={()=>setConfirmClear(true)} disabled={resolvedCount===0} style={{...mkBtn("#374151"),fontSize:13,padding:"7px 16px",opacity:resolvedCount===0?0.4:1}}>Clear Resolved ({resolvedCount})</button>
+          ):(
+            <div style={{display:"flex",gap:8,alignItems:"center"}}>
+              <span style={{color:"#f87171",fontSize:12}}>Remove {resolvedCount} resolved errors?</span>
+              <button onClick={()=>{onClearResolved();setConfirmClear(false);}} style={{...mkBtn("#dc2626"),fontSize:13,padding:"7px 14px"}}>Yes, Clear</button>
+              <button onClick={()=>setConfirmClear(false)} style={{...mkBtn("#374151"),fontSize:13,padding:"7px 14px"}}>Cancel</button>
+            </div>
+          )}
+        </div>
+      </div>
+      <div style={{display:"flex",flexDirection:"column",gap:10}}>
+        {filtered.map(e=>{
+          const et=ERROR_TYPES.find(t=>t.id===e.type);
+          const sb=stStyle(e.status);
+          return(
+            <div key={e.id} style={{background:"#1e293b",border:"1px solid #334155",borderRadius:12,padding:16,borderLeft:`4px solid ${et?.color||"#334155"}`}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexWrap:"wrap",gap:8}}>
+                <div style={{display:"flex",alignItems:"center",gap:10}}>
+                  <div style={{width:8,height:8,borderRadius:"50%",background:et?.color||"#64748b",flexShrink:0}}/>
+                  <span style={{color:"#e2e8f0",fontWeight:600,fontSize:14}}>{et?.label||e.type}</span>
+                  <span style={{background:sevColor(e.severity)+"22",color:sevColor(e.severity),border:`1px solid ${sevColor(e.severity)}55`,borderRadius:6,padding:"2px 9px",fontSize:11,fontWeight:700,fontFamily:"'DM Mono',monospace"}}>{e.severity}</span>
+                </div>
+                <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                  <span style={{background:sb.bg,color:sb.color,border:`1px solid ${sb.border}`,borderRadius:6,padding:"2px 10px",fontSize:11,fontWeight:700,fontFamily:"'DM Mono',monospace"}}>{e.status}</span>
+                  <select value={e.status} onChange={ev=>onUpdate(e.id,{status:ev.target.value})} style={{background:"#0f172a",border:"1px solid #334155",borderRadius:6,padding:"3px 7px",color:"#94a3b8",fontSize:11,cursor:"pointer"}}>
+                    <option>Open</option><option>In Progress</option><option>Resolved</option>
+                  </select>
+                  <button onClick={()=>onDelete(e.id)} style={{background:"#dc262622",border:"1px solid #dc262655",color:"#f87171",borderRadius:6,padding:"3px 10px",fontSize:11,cursor:"pointer",fontWeight:600}}>Delete</button>
+                </div>
+              </div>
+              <div style={{color:"#cbd5e1",fontSize:14,marginTop:10,lineHeight:1.5}}>{e.description}</div>
+              {e.aiSuggestion&&<div style={{marginTop:8,color:"#fbbf24",fontSize:12,background:"#1c170022",border:"1px solid #f59e0b33",borderRadius:6,padding:"5px 10px",display:"inline-block"}}>Suggested: {e.aiSuggestion}</div>}
+              <div style={{display:"flex",gap:18,marginTop:10,flexWrap:"wrap"}}>
+                {[["Zone",e.zone],["Shift",e.shift],["Barcode",e.barcode||"—"],["Logged",fmt(e.timestamp)],["Employee",e.employee||"—"]].map(([k,v])=>(
+                  <span key={k} style={{color:"#475569",fontSize:12}}>
+                    <span style={{color:"#64748b",fontFamily:"'DM Mono',monospace",fontSize:10,textTransform:"uppercase",letterSpacing:0.8}}>{k} </span>
+                    <span style={{color:"#94a3b8"}}>{v}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+        {filtered.length===0&&<div style={{color:"#475569",textAlign:"center",padding:48,fontFamily:"'DM Mono',monospace",fontSize:12,letterSpacing:1}}>NO ERRORS MATCH YOUR FILTERS</div>}
+      </div>
+    </div>
+  );
+}
+
+function ExportPanel({errors}){
+  function exportCSV(){
+    const headers=["ID","Type","Severity","Zone","Shift","Description","Barcode","Status","Employee","Timestamp","Resolved By"];
+    const rows=errors.map(e=>[e.id,ERROR_TYPES.find(t=>t.id===e.type)?.label||e.type,e.severity,e.zone,e.shift,`"${e.description}"`,e.barcode,e.status,e.employee||"",fmt(e.timestamp),e.resolvedBy]);
+    const csv=[headers,...rows].map(r=>r.join(",")).join("\n");
+    const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));a.download=`cardinal_errors_${Date.now()}.csv`;a.click();
+  }
+  function exportJSON(){
+    const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([JSON.stringify(errors,null,2)],{type:"application/json"}));a.download=`cardinal_errors_${Date.now()}.json`;a.click();
+  }
+  const open=errors.filter(e=>e.status==="Open").length;
+  const critical=errors.filter(e=>e.severity==="Critical").length;
+  const resRate=errors.length?Math.round(errors.filter(e=>e.status==="Resolved").length/errors.length*100):0;
+  return(
+    <div style={{maxWidth:560}}>
+      <SH title="Export Reports" sub="Download all error data for reporting, compliance, or further analysis"/>
+      <div style={{...card,marginBottom:16}}>
+        <div style={{color:"#64748b",fontFamily:"'DM Mono',monospace",fontSize:11,letterSpacing:1.2,textTransform:"uppercase",marginBottom:12}}>Report Summary</div>
+        {[["Total Errors Logged",errors.length,"#e2e8f0"],["Open Errors",open,"#ef4444"],["Critical Alerts",critical,"#dc2626"],["Resolution Rate",resRate+"%","#22c55e"],["Generated",new Date().toLocaleString(),"#e2e8f0"]].map(([k,v,c])=>(
+          <div key={k} style={{display:"flex",justifyContent:"space-between",padding:"8px 0",borderBottom:"1px solid #0f172a"}}>
+            <span style={{color:"#64748b",fontSize:13}}>{k}</span>
+            <span style={{color:c,fontSize:13,fontWeight:600}}>{v}</span>
+          </div>
+        ))}
+      </div>
+      <div style={{display:"flex",gap:12}}>
+        <button onClick={exportCSV} style={{...mkBtn("#16a34a"),flex:1,textAlign:"center"}}>Export CSV</button>
+        <button onClick={exportJSON} style={{...mkBtn("#2563eb"),flex:1,textAlign:"center"}}>Export JSON</button>
+      </div>
+    </div>
+  );
+}
+
+function Dashboard({errors}){
+  const byType=Object.fromEntries(ERROR_TYPES.map(t=>[t.label,0]));
+  errors.forEach(e=>{const t=ERROR_TYPES.find(x=>x.id===e.type);if(t)byType[t.label]++;});
+  const recent=errors.filter(e=>e.status!=="Resolved").sort((a,b)=>b.timestamp-a.timestamp).slice(0,5);
+  return(
+    <div>
+      <StatsBar errors={errors}/>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+        <div>
+          <div style={{color:"#94a3b8",fontFamily:"'DM Mono',monospace",fontSize:11,letterSpacing:1.2,textTransform:"uppercase",marginBottom:12}}>Recent Open Errors</div>
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            {recent.length===0&&<div style={{...card,color:"#64748b",fontSize:13,textAlign:"center",padding:32}}>No open errors — all clear.</div>}
+            {recent.map(e=>{
+              const et=ERROR_TYPES.find(t=>t.id===e.type);
+              return(
+                <div key={e.id} style={{background:"#1e293b",borderRadius:10,padding:14,borderLeft:`3px solid ${et?.color||"#334155"}`}}>
+                  <div style={{display:"flex",justifyContent:"space-between"}}>
+                    <span style={{color:"#e2e8f0",fontSize:13,fontWeight:600}}>{et?.label}</span>
+                    <span style={{color:sevColor(e.severity),fontSize:12,fontWeight:700}}>{e.severity}</span>
+                  </div>
+                  <div style={{color:"#94a3b8",fontSize:12,marginTop:5,lineHeight:1.5}}>{e.description?.slice(0,90)}{e.description?.length>90?"...":""}</div>
+                  <div style={{color:"#475569",fontSize:11,marginTop:6}}>{e.zone} · {fmt(e.timestamp)} · {e.employee||"Unknown"}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        <div>
+          <div style={{color:"#94a3b8",fontFamily:"'DM Mono',monospace",fontSize:11,letterSpacing:1.2,textTransform:"uppercase",marginBottom:12}}>Error Breakdown</div>
+          <BarChart data={byType} colorFn={k=>ERROR_TYPES.find(t=>t.label===k)?.color} title="By Error Type"/>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function App(){
+  const [errors,setErrors]=useState(()=>load());
+  const [tab,setTab]=useState("dashboard");
+  const [banner,setBanner]=useState(null);
+
+  useEffect(()=>{save(errors);},[errors]);
+
+  const addError=useCallback(e=>{
+    setErrors(p=>[e,...p]);
+    if(e.severity==="Critical"){setBanner(`CRITICAL ERROR: ${e.description?.slice(0,70)}...`);setTimeout(()=>setBanner(null),6000);}
+  },[]);
+  const updateError=useCallback((id,patch)=>setErrors(p=>p.map(e=>e.id===id?{...e,...patch}:e)),[]);
+  const deleteError=useCallback(id=>setErrors(p=>p.filter(e=>e.id!==id)),[]);
+  const clearResolved=useCallback(()=>setErrors(p=>p.filter(e=>e.status!=="Resolved")),[]);
+  const criticalOpen=errors.filter(e=>e.severity==="Critical"&&e.status!=="Resolved").length;
+
+  const TABS=[{id:"dashboard",label:"Dashboard"},{id:"log",label:"Log Error"},{id:"errors",label:"Error Log"},{id:"analytics",label:"Analytics"},{id:"export",label:"Export"}];
+
+  return(
+    <div style={{minHeight:"100vh",background:"#0f172a"}}>
+      {banner&&<div style={{position:"fixed",top:0,left:0,right:0,background:"#dc2626",color:"#fff",padding:"11px 24px",textAlign:"center",fontWeight:700,fontSize:13,zIndex:1000}}>{banner}</div>}
+      <div style={{background:"#1e293b",borderBottom:"1px solid #334155"}}>
+        <div style={{maxWidth:1140,margin:"0 auto",padding:"0 24px",display:"flex",alignItems:"center",justifyContent:"space-between",height:62}}>
+          <div style={{display:"flex",alignItems:"center",gap:14}}>
+            <div style={{background:"#dc2626",borderRadius:8,width:36,height:36,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:900,fontSize:15,color:"#fff"}}>CH</div>
+            <div>
+              <div style={{color:"#f1f5f9",fontWeight:700,fontSize:16}}>Cardinal Health</div>
+              <div style={{color:"#475569",fontSize:11,fontFamily:"'DM Mono',monospace",letterSpacing:0.8}}>Warehouse Error Tracking</div>
+            </div>
+          </div>
+          <div style={{background:criticalOpen>0?"#dc262622":"#16a34a22",border:`1px solid ${criticalOpen>0?"#dc2626":"#16a34a"}`,borderRadius:8,padding:"5px 14px",color:criticalOpen>0?"#f87171":"#4ade80",fontSize:12,fontFamily:"'DM Mono',monospace",fontWeight:600}}>
+            {criticalOpen>0?`${criticalOpen} Critical Open`:"System Nominal"}
+          </div>
+        </div>
+      </div>
+      <div style={{background:"#1e293b",borderBottom:"1px solid #1e3347"}}>
+        <div style={{maxWidth:1140,margin:"0 auto",padding:"0 24px",display:"flex",gap:2}}>
+          {TABS.map(t=>(
+            <button key={t.id} onClick={()=>setTab(t.id)} style={{background:"transparent",color:tab===t.id?"#38bdf8":"#64748b",border:"none",borderBottom:tab===t.id?"2px solid #38bdf8":"2px solid transparent",padding:"13px 18px",fontWeight:600,fontSize:13,cursor:"pointer",fontFamily:"'DM Sans',sans-serif"}}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div style={{maxWidth:1140,margin:"0 auto",padding:"28px 24px"}}>
+        {tab==="dashboard"&&<Dashboard errors={errors}/>}
+        {tab==="log"&&<div><AILogger onError={addError}/><ManualForm onError={addError}/></div>}
+        {tab==="errors"&&<ErrorList errors={errors} onUpdate={updateError} onDelete={deleteError} onClearResolved={clearResolved}/>}
+        {tab==="analytics"&&<Analytics errors={errors}/>}
+        {tab==="export"&&<ExportPanel errors={errors}/>}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
